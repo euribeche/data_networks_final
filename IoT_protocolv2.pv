@@ -1,0 +1,134 @@
+type key.
+type host.
+type nonce.
+
+type skey. 
+type pkey.
+type spkey.
+type sskey.
+
+free IoT, S: host.
+free c:channel.
+free control_data:bitstring [private].
+free output_data:bitstring [private].
+free testD:bitstring [private].
+free testS:bitstring [private].
+free testP:bitstring [private].
+free secretPN1, secretPN2, secretSN1, secretSN2:bitstring [private].
+
+fun nonce_to_bitstring(nonce):bitstring [data, typeConverter].
+fun bitstring_to_nonce(bitstring):nonce [data, typeConverter].
+fun nonce_to_key(nonce):key [data, typeConverter].
+
+fun hash(bitstring, key):bitstring.
+
+fun senc(bitstring,key):bitstring.
+reduc forall m:bitstring,k:key; sdec(senc(m,k),k) = m.
+
+fun pk(skey): pkey.
+fun aenc(bitstring, pkey):bitstring.
+reduc forall m:bitstring, k:skey; adec(aenc(m, pk(k)), k) = m.
+
+fun spk(sskey): spkey.
+fun sign(bitstring, sskey): bitstring.
+reduc forall m:bitstring, k:sskey; checksign(sign(m, k), spk(k)) = m.
+
+event PhoneAccepts(nonce, nonce, pkey).
+event PhoneTerminates(nonce, nonce, pkey).
+event ServerAccepts(nonce, nonce, pkey).
+event ServerTerminates(nonce, nonce, pkey).
+event serverTerms(bitstring, key).
+event IoTAccepts(bitstring, key).
+event IoTTerms(bitstring, key).
+event serverAccepts(bitstring, key).
+
+query attacker(output_data).
+query attacker(control_data).
+query attacker(testP).
+query attacker(testS).
+query attacker(testD).
+query attacker(secretPN1).
+query attacker(secretPN2).
+query attacker(secretSN1).
+query attacker(secretSN2).
+
+query N1:nonce, N2:nonce, puX:pkey; inj-event(PhoneTerminates(N1, N2, puX)) ==> inj-event(ServerAccepts(N1, N2, puX)).
+query N1:nonce, N2:nonce, puX:pkey; inj-event(ServerTerminates(N1, N2, puX)) ==> inj-event(PhoneAccepts(N1, N2, puX)).
+query m:bitstring, k:key; inj-event(serverTerms(m,k) ) ==>inj-event (IoTAccepts(m, k)).
+query m:bitstring, k:key; inj-event(IoTTerms(m,k) ) ==>inj-event (serverAccepts(m, k)).
+
+let Phone(prP:skey, puS:pkey, skP:sskey, pkS:spkey) = 
+in(c, puX:pkey);
+new N21:nonce;
+let m21 = sign(aenc((N21, pk(prP)), puX), skP) in
+out(c, m21);
+in(c, m22:bitstring);
+let (=N21, N22:nonce) = adec(checksign(m22, pkS), prP) in
+event PhoneAccepts(N21, N22, puX);
+let m23 = sign(aenc(nonce_to_bitstring(N22), puX), skP) in
+out(c, m23);
+if (puX = puS) then
+event PhoneTerminates(N21, N22, pk(prP));
+out(c, senc(secretPN1, nonce_to_key(N21)));
+out(c, senc(secretPN2, nonce_to_key(N22)));
+out(c, testP);
+0.
+
+let Server(ks_IoT:key, prS:skey, puP:pkey, skS:sskey, pkP:spkey) = 
+in(c, m21:bitstring);
+let (N21:nonce, puX:pkey) = adec(checksign(m21, pkP), prS) in
+new N22:nonce;
+event ServerAccepts(N21, N22, puX);
+let m22 = sign(aenc((N21, N22), puX), skS) in
+out(c, m22);
+in(c, m23:bitstring);
+let (N22X:bitstring) = adec(checksign(m23, pkP), prS) in
+if (bitstring_to_nonce(N22X)) = N22 then
+if (puX = puP) then
+event ServerTerminates(N21, N22, pk(prS));
+out(c, senc(secretSN1, nonce_to_key(N21)));
+out(c, senc(secretSN2, nonce_to_key(N22)));
+
+new N11:nonce;
+let m11 = senc((N11, S, control_data),ks_IoT) in
+let h11 = hash(m11, ks_IoT) in
+out (c, (m11,h11));
+
+in(c, (m12:bitstring, h12:bitstring));
+let (N12:nonce, N11X:nonce, IoTX:host, dataR:bitstring) = sdec(m12, ks_IoT) in 
+(*Checks if received nonce is one sent and host is correct by reencryption and ensures integrity through hash*)
+if hash(senc((N12, N11, IoT, dataR), ks_IoT), ks_IoT) = h12 then
+event serverAccepts(dataR, ks_IoT);
+let h13 = hash((N12, S), ks_IoT) in
+out(c, h13);
+event serverTerms(control_data, ks_IoT);
+out(c, testS);
+0.
+
+let IoTDevice(ks_IoT:key) =
+in(c, (m11:bitstring, h11:bitstring));
+if ((hash(m11, ks_IoT) = h11)) then
+let (N11:nonce, SX:host, control:bitstring) = sdec(m11,ks_IoT) in
+if (SX = S) then
+event IoTAccepts(control, ks_IoT);
+new N12:nonce;
+let m12 = senc((N12, N11, IoT, output_data), ks_IoT) in
+let h12 = hash(m12, ks_IoT) in
+out(c, (m12, h12));
+
+(*IoT device confirms that its Data was Received by the server*)
+in(c, h13:bitstring);
+if (h13 = hash((N12, S), ks_IoT)) then
+event IoTTerms(output_data, ks_IoT);
+out(c, testD);
+0.
+
+process
+new ks_IoT:key; (*preestablished (during setup of device by admin) symmetric key for server and IoT device*)
+(*public keys for phone and server*)
+new prP:skey; let puP = pk(prP) in out(c, puP);
+new prS:skey; let puS = pk(prS) in out(c, puS);
+new skP:sskey; let pkP = spk(skP) in out (c, pkP);
+new skS:sskey; let pkS = spk(skS) in out (c, pkS);
+
+((!Phone(prP, puS, skP, pkS)) | (!IoTDevice(ks_IoT)) | (!Server(ks_IoT, prS, puP, skS, pkP)))
